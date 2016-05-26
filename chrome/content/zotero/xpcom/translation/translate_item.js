@@ -554,12 +554,27 @@ Zotero.Translate.ItemSaver.prototype = {
 			Zotero.debug('Importing attachment from document');
 			attachment.linkMode = "imported_url";
 			
-			return Zotero.Attachments.importFromDocument({
-				libraryID: this._libraryID,
-				document: attachment.document,
-				parentItemID: parentID,
-				title: title
-			});
+			let url = attachment.document.location.href;
+			let html = attachment.document.documentElement.innerHTML;
+			
+			// Save via connector server to address bug saving document directly
+			Zotero.Server.Connector.Data[url] = "<html>" + html + "</html>";
+			let deferred = Zotero.Promise.defer();
+			Zotero.HTTP.processDocuments(
+				["zotero://connector/" + encodeURIComponent(url)],
+				function (doc) {
+					delete Zotero.Server.Connector.Data[url];
+					
+					return Zotero.Attachments.importFromDocument({
+						document: doc,
+						parentItemID: parentID,
+						title: doc.title
+					})
+					.then(attachment => deferred.resolve(attachment))
+					.catch(e => deferred.reject(e));
+				}
+			);
+			return deferred.promise;
 		}
 		
 		// Import from URL

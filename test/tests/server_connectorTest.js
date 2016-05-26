@@ -104,7 +104,7 @@ describe("Connector Server", function () {
 	});
 	
 	describe("/connector/saveSnapshot", function () {
-		it("should save a webpage item and snapshot to the current selected collection", function* () {
+		it("should save a webpage item and non-readerable snapshot to the current selected collection", function* () {
 			var collection = yield createDataObject('collection');
 			yield waitForItemsLoad(win);
 			
@@ -144,6 +144,68 @@ describe("Connector Server", function () {
 			item = Zotero.Items.get(ids2[0]);
 			assert.isTrue(item.isImportedAttachment());
 			assert.equal(item.getField('title'), 'Title');
+			var path = yield item.getFilePathAsync();
+			var fileContents = yield Zotero.File.getContentsAsync(path);
+			assert.notInclude(fileContents, 'moz-reader-content');
+		});
+		
+		it("should save a webpage item and readerable snapshot to the current selected collection", function* () {
+			var collection = yield createDataObject('collection');
+			yield waitForItemsLoad(win);
+			
+			var pageTitle = "Page Title";
+			var articleTitle = "Article Title";
+			var byline = "First Last";
+			var content = "<p>" + new Array(50).fill("").map(x => Zotero.Utilities.randomString()).join(" ") + "</p>"
+				+ "<p>" + new Array(50).fill("").map(x => Zotero.Utilities.randomString()).join(" ") + "</p>"
+				+ "<p>" + new Array(50).fill("").map(x => Zotero.Utilities.randomString()).join(" ") + "</p>"
+			
+			// saveSnapshot saves parent and child before returning
+			var ids1, ids2;
+			var promise = waitForItemEvent('add').then(function (ids) {
+				ids1 = ids;
+				return waitForItemEvent('add').then(function (ids) {
+					ids2 = ids;
+				});
+			});
+			yield Zotero.HTTP.request(
+				'POST',
+				connectorServerPath + "/connector/saveSnapshot",
+				{
+					headers: {
+						"Content-Type": "application/json"
+					},
+					body: JSON.stringify({
+						url: "http://example.com/articles/1",
+						html: `<html><head><title>${pageTitle}</title><body>`
+							+ "<article>"
+							+ `<h1>${articleTitle}</h1>`
+							+ `<p class="author">${byline}</p>`
+							+ content
+							+ "</article>"
+							+ "</body></html>"
+					})
+				}
+			);
+			
+			assert.isTrue(promise.isFulfilled());
+			
+			// Check parent item
+			assert.lengthOf(ids1, 1);
+			var item = Zotero.Items.get(ids1[0]);
+			assert.equal(Zotero.ItemTypes.getName(item.itemTypeID), 'webpage');
+			assert.isTrue(collection.hasItem(item.id));
+			assert.equal(item.getField('title'), pageTitle);
+			
+			// Check attachment
+			assert.lengthOf(ids2, 1);
+			item = Zotero.Items.get(ids2[0]);
+			assert.isTrue(item.isImportedAttachment());
+			assert.equal(item.getField('title'), pageTitle);
+			var path = yield item.getFilePathAsync();
+			var fileContents = yield Zotero.File.getContentsAsync(path);
+			assert.include(fileContents, 'moz-reader-content');
+			assert.include(fileContents, content.match(/[a-z]+/i)[0]);
 		});
 		
 		it("should save a PDF to the current selected collection", function* () {
