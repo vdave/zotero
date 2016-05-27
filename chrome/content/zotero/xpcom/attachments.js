@@ -589,64 +589,8 @@ Zotero.Attachments = new function(){
 		var browser;
 		
 		if (contentType === 'text/html' || contentType === 'application/xhtml+xml') {
-			// If page looks like an article, run it through Reader Mode
-			try {
-				Components.utils.import("resource://gre/modules/ReaderMode.jsm")
-				if (ReaderMode.isProbablyReaderable(document)) {
-					Zotero.debug("Document is probably readerable");
-					browser = Zotero.Browser.createHiddenBrowser();
-					let loadDeferred = Zotero.Promise.defer();
-					browser.addEventListener('DOMContentLoaded', () => loadDeferred.resolve());
-					// Use Firefox's Reader Mode template
-					browser.loadURI("chrome://global/content/reader/aboutReader.html");
-					yield loadDeferred.promise;
-					let doc = browser.contentDocument;
-					
-					let article = yield ReaderMode.parseDocument(document);
-					
-					let scriptElement = doc.getElementsByTagName('script')[0];
-					let toolbarElement = doc.getElementById('reader-toolbar');
-					let headerElement = doc.getElementById('reader-header');
-					let domainElement = doc.getElementById('reader-domain');
-					let titleElement = doc.getElementById('reader-title');
-					let bylineElement = doc.getElementById('reader-credits');
-					let contentElement = doc.getElementById('moz-reader-content');
-					let footerElement = doc.getElementById('reader-footer');
-					
-					// Remove Reader Mode controls
-					[scriptElement, toolbarElement, domainElement, footerElement].forEach(elem => {
-						elem.parentNode.removeChild(elem);
-					});
-					
-					// The following logic more or less follows AboutReader.jsm::_showContent()
-					doc.title = article.title;
-					titleElement.textContent = article.title;
-					
-					if (article.byline) {
-						bylineElement.textContent = article.byline;
-					}
-					
-					headerElement.style.display = 'block';
-					
-					let parserUtils = Cc["@mozilla.org/parserutils;1"].getService(Ci.nsIParserUtils);
-					let contentFragment = parserUtils.parseFragment(
-						article.content,
-						Ci.nsIParserUtils.SanitizerDropForms | Ci.nsIParserUtils.SanitizerAllowStyle,
-						false,
-						Services.io.newURI(url, null, null),
-						contentElement
-					);
-					contentElement.innerHTML = "";
-					contentElement.appendChild(contentFragment);
-					
-					contentElement.style.display = 'block';
-					
-					document = doc;
-				}
-			}
-			catch (e) {
-				Zotero.logError(e);
-			}
+			// Make reading-optimized version of document if possible
+			document = yield Zotero.Utilities.Internal.readerizeDocument(document, url);
 			
 			// Load WebPageDump code
 			var wpd = { Zotero };
