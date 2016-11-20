@@ -398,14 +398,14 @@ Zotero.LibraryTreeView.prototype = {
 				Zotero.DragDrop.currentEvent = event;
 				if (event.metaKey) {
 					if (event.altKey) {
-						event.dataTransfer.dropEffect = 'link';
+						event.dataTransfer.dropEffect = 'copy';
 					}
 					else {
 						event.dataTransfer.dropEffect = 'move';
 					}
 				}
 				else {
-					event.dataTransfer.dropEffect = 'copy';
+					event.dataTransfer.dropEffect = 'link';
 				}
 			}
 		}
