@@ -390,6 +390,8 @@ Zotero.LibraryTreeView.prototype = {
 	
 	/*
 	 * Called by HTML 5 Drag and Drop when dropping onto the tree
+	 *
+	 * DV - changed order, default is to link rather than copy.
 	 */
 	onDrop: function (event) {
 		// See note above
