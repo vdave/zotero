@@ -131,14 +131,14 @@ Zotero.Sync.Data.Local = {
 					
 			var accept = false;
 			if (io.accept) {
-				var resetDataDirFile = OS.Path.join(Zotero.getZoteroDirectory().path, 'reset-data-directory');
+				var resetDataDirFile = OS.Path.join(Zotero.DataDirectory.dir, 'reset-data-directory');
 				yield Zotero.File.putContentsAsync(resetDataDirFile, '');
 
 				Zotero.Utilities.Internal.quitZotero(true);
 				accept = true;
 			}
 			// else if (io.extra1) {
-			// 	if (Zotero.forceNewDataDirectory(win)) {
+			// 	if (Zotero.DataDirectory.forceChange(win)) {
 			// 		var ps = Services.prompt;
 			// 		ps.alert(null,
 			// 			Zotero.getString('general.restartRequired'),

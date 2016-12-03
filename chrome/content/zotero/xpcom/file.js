@@ -444,7 +444,6 @@ Zotero.File = new function(){
 		var it = new OS.File.DirectoryIterator(path);
 		try {
 			let entry = yield it.next();
-			Zotero.debug(entry);
 			return false;
 		}
 		catch (e) {
@@ -487,6 +486,17 @@ Zotero.File = new function(){
 		});
 	}
 	
+	
+	/**
+	 * If directories can be moved at once, instead of recursively creating directories and moving files
+	 *
+	 * Currently this means using /bin/mv, which only works on macOS and Linux
+	 */
+	this.canMoveDirectoryAtomic = Zotero.lazy(function () {
+		var cmd = "/bin/mv";
+		return !Zotero.isWin && this.pathToFile(cmd).exists();
+	});
+	
 	/**
 	 * Move directory (using mv on macOS/Linux, recursively on Windows)
 	 *
@@ -498,7 +508,7 @@ Zotero.File = new function(){
 	this.moveDirectory = Zotero.Promise.coroutine(function* (oldDir, newDir, options = {}) {
 		var maxDepth = options.maxDepth || 10;
 		var cmd = "/bin/mv";
-		var useCmd = !Zotero.isWin && (yield OS.File.exists(cmd));
+		var useCmd = this.canMoveDirectoryAtomic();
 		
 		if (!options.allowExistingTarget && (yield OS.File.exists(newDir))) {
 			throw new Error(newDir + " exists");
@@ -544,6 +554,12 @@ Zotero.File = new function(){
 				while (true) {
 					let entry = yield iterator.next();
 					let dest = newDir + entry.path.substr(rootDir.length);
+					
+					// entry.isDir can be false for some reason on Travis, causing spurious test failures
+					if (Zotero.automatedTest && !entry.isDir && (yield OS.File.stat(entry.path)).isDir) {
+						Zotero.debug("Overriding isDir for " + entry.path);
+						entry.isDir = true;
+					}
 					
 					// Move files in directory
 					if (!entry.isDir) {

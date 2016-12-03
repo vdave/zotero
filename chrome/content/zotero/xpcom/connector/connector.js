@@ -139,16 +139,33 @@ Zotero.Connector = new function() {
 	/**
 	 * Sends the XHR to execute an RPC call.
 	 *
-	 * @param	{String}		method			RPC method. See documentation above.
-	 * @param	{Object}		data			RPC data. See documentation above.
-	 * @param	{Function}		callback		Function to be called when requests complete.
+	 * @param {String|Object} options - The method name as a string or an object with the
+	 *     following properties:
+	 *         method - method name
+	 *         headers - an object of HTTP headers to send
+	 *         queryString - a query string to pass on the HTTP call
+	 * @param {Object} data - RPC data to POST. If null or undefined, a GET request is sent.
+	 * @param {Function} callback - Function to be called when requests complete.
 	 */
-	this.callMethod = function(method, data, callback, tab) {
+	this.callMethod = function(options, data, callback, tab) {
 		// Don't bother trying if not online in bookmarklet
 		if(Zotero.isBookmarklet && this.isOnline === false) {
 			callback(false, 0);
 			return;
 		}
+		if (typeof options == 'string') {
+			options = {method: options};
+		}
+		var method = options.method;
+		var sendRequest = (data === null || data === undefined)
+			? Zotero.HTTP.doGet.bind(Zotero.HTTP)
+			: Zotero.HTTP.doPost.bind(Zotero.HTTP);
+		var headers = Object.assign({
+				"Content-Type":"application/json",
+				"X-Zotero-Version":Zotero.version,
+				"X-Zotero-Connector-API-Version":CONNECTOR_API_VERSION
+			}, options.headers);
+		var queryString = options.queryString ? ("?" + options.queryString) : "";
 		
 		var newCallback = function(req) {
 			try {
@@ -203,13 +220,11 @@ Zotero.Connector = new function() {
 				callback(false, 0);
 			}
 		} else {							// Other browsers can use plain doPost
-			var uri = CONNECTOR_URI+"connector/"+method;
-			Zotero.HTTP.doPost(uri, JSON.stringify(data),
-				newCallback, {
-					"Content-Type":"application/json",
-					"X-Zotero-Version":Zotero.version,
-					"X-Zotero-Connector-API-Version":CONNECTOR_API_VERSION
-				});
+			var uri = CONNECTOR_URI + "connector/" + method + queryString;
+			if (headers["Content-Type"] == 'application/json') {
+				data = JSON.stringify(data);
+			}
+			sendRequest(uri, data, newCallback, headers);
 		}
 	},
 	

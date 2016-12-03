@@ -1,18 +1,18 @@
 "use strict";
 
-describe("Zotero Core Functions", function () {
+describe("Zotero.DataDirectory", function () {
 	var tmpDir, oldDir, newDir, dbFilename, oldDBFile, newDBFile, oldStorageDir, newStorageDir,
 		oldTranslatorsDir, newTranslatorsDir, translatorName1, translatorName2,
 		oldStorageDir1, newStorageDir1, storageFile1, oldStorageDir2, newStorageDir2, storageFile2,
 		str1, str2, str3, str4, str5, str6,
 		oldMigrationMarker, newMigrationMarker,
-		stub1, stub2, stub3;
+		stubs = {};
 	
 	before(function* () {
 		tmpDir = yield getTempDirectory();
 		oldDir = OS.Path.join(tmpDir, "old");
 		newDir = OS.Path.join(tmpDir, "new");
-		dbFilename = Zotero.getDatabaseFilename();
+		dbFilename = Zotero.DataDirectory.getDatabaseFilename();
 		oldDBFile = OS.Path.join(oldDir, dbFilename);
 		newDBFile = OS.Path.join(newDir, dbFilename);
 		oldStorageDir = OS.Path.join(oldDir, "storage");
@@ -33,46 +33,55 @@ describe("Zotero Core Functions", function () {
 		str4 = '4';
 		str5 = '5';
 		str6 = '6';
-		oldMigrationMarker = OS.Path.join(oldDir, Zotero.DATA_DIR_MIGRATION_MARKER);
-		newMigrationMarker = OS.Path.join(newDir, Zotero.DATA_DIR_MIGRATION_MARKER);
+		oldMigrationMarker = OS.Path.join(oldDir, Zotero.DataDirectory.MIGRATION_MARKER);
+		newMigrationMarker = OS.Path.join(newDir, Zotero.DataDirectory.MIGRATION_MARKER);
+		
+		stubs.canMigrate = sinon.stub(Zotero.DataDirectory, "canMigrate").returns(true);
+		// A pipe always exists during tests, since Zotero is running
+		stubs.pipeExists = sinon.stub(Zotero.IPC, "pipeExists").returns(Zotero.Promise.resolve(false));
 	});
 	
 	beforeEach(function* () {
-		stub1 = sinon.stub(Zotero, "setDataDirectory");
+		stubs.setDataDir = sinon.stub(Zotero.DataDirectory, "set");
 	});
 	
 	afterEach(function* () {
 		yield removeDir(oldDir);
 		yield removeDir(newDir);
-		Zotero._cacheDataDirectory(false);
+		Zotero.DataDirectory._cache(false);
+		yield Zotero.DataDirectory.init();
 		
-		stub1.restore();
+		stubs.setDataDir.restore();
+	});
+	
+	after(function* () {
+		stubs.canMigrate.restore();
+		stubs.pipeExists.restore();
 	});
 	
 	var disableCommandMode = function () {
 		// Force non-mv mode
 		var origFunc = OS.File.exists;
-		stub2 = sinon.stub(OS.File, "exists", function (path) {
-			if (path == '/bin/mv') {
-				return Zotero.Promise.resolve(false);
-			}
-			else {
-				return origFunc(path);
-			}
-		});
+		if (!stubs.canMoveDirectoryAtomic) {
+			stubs.canMoveDirectoryAtomic = sinon.stub(Zotero.File, "canMoveDirectoryAtomic")
+				.returns(false);
+		}
 	};
 	
 	var resetCommandMode = function () {
-		stub2.restore();
+		if (stubs.canMoveDirectoryAtomic) {
+			stubs.canMoveDirectoryAtomic.restore();
+			stubs.canMoveDirectoryAtomic = undefined;
+		}
 	};
 	
-	var populateDataDirectory = Zotero.Promise.coroutine(function* (dir, srcDir) {
+	var populateDataDirectory = Zotero.Promise.coroutine(function* (dir, srcDir, automatic = false) {
 		yield OS.File.makeDir(dir, { unixMode: 0o755 });
 		let storageDir = OS.Path.join(dir, 'storage');
 		let storageDir1 = OS.Path.join(storageDir, 'AAAAAAAA');
 		let storageDir2 = OS.Path.join(storageDir, 'BBBBBBBB');
 		let translatorsDir = OS.Path.join(dir, 'translators');
-		let migrationMarker = OS.Path.join(dir, Zotero.DATA_DIR_MIGRATION_MARKER);
+		let migrationMarker = OS.Path.join(dir, Zotero.DataDirectory.MIGRATION_MARKER);
 		
 		// Database
 		yield Zotero.File.putContentsAsync(OS.Path.join(dir, dbFilename), str1);
@@ -90,7 +99,13 @@ describe("Zotero Core Functions", function () {
 		yield Zotero.File.putContentsAsync(OS.Path.join(translatorsDir, translatorName1), str4);
 		yield Zotero.File.putContentsAsync(OS.Path.join(translatorsDir, translatorName2), str5);
 		// Migration marker
-		yield Zotero.File.putContentsAsync(migrationMarker, srcDir || dir);
+		yield Zotero.File.putContentsAsync(
+			migrationMarker,
+			JSON.stringify({
+				sourceDir: srcDir || dir,
+				automatic
+			})
+		);
 	});
 	
 	var checkMigration = Zotero.Promise.coroutine(function* (options = {}) {
@@ -118,16 +133,16 @@ describe("Zotero Core Functions", function () {
 		}
 		
 		if (!options.skipSetDataDirectory) {
-			assert.ok(stub1.calledOnce);
-			assert.ok(stub1.calledWith(newDir));
+			assert.ok(stubs.setDataDir.calledOnce);
+			assert.ok(stubs.setDataDir.calledWith(newDir));
 		}
 	});
 	
 	
-	describe("#checkForDataDirectoryMigration()", function () {
-		let stub3;
+	describe("#checkForMigration()", function () {
+		let fileMoveStub;
 		
-		before(function () {
+		beforeEach(function () {
 			disableCommandMode();
 		});
 		
@@ -135,76 +150,135 @@ describe("Zotero Core Functions", function () {
 			resetCommandMode();
 		});
 		
-		it("should show error on partial failure", function* () {
-			Zotero.Debug.init(true);
+		var tests = [];
+		function add(desc, fn) {
+			tests.push([desc, fn]);
+		}
+		
+		it("should skip automatic migration if target directory exists and is non-empty", function* () {
+			resetCommandMode();
+			
+			// No automatic migration without atomic directory move
+			if (!Zotero.File.canMoveDirectoryAtomic()) {
+				this.skip();
+			}
+			
 			yield populateDataDirectory(oldDir);
+			yield OS.File.remove(oldMigrationMarker);
+			yield OS.File.makeDir(newDir, { unixMode: 0o755 });
+			yield Zotero.File.putContentsAsync(OS.Path.join(newDir, 'a'), '');
 			
-			let origFunc = OS.File.move;
-			let stub3 = sinon.stub(OS.File, "move", function () {
-				if (OS.Path.basename(arguments[0]) == storageFile1) {
-					return Zotero.Promise.reject(new Error("Error"));
-				}
-				else {
-					let args;
-					if (Zotero.platformMajorVersion < 46) {
-						args = Array.from(arguments);
-					}
-					else {
-						args = arguments;
-					}
-					return origFunc(...args);
-				}
-			});
-			let stub4 = sinon.stub(Zotero.File, "reveal").returns(Zotero.Promise.resolve());
-			let stub5 = sinon.stub(Zotero.Utilities.Internal, "quitZotero");
-			
-			var promise = waitForDialog();
-			yield Zotero.checkForDataDirectoryMigration(oldDir, newDir);
-			Zotero.debug("Waiting for dialog");
-			yield promise;
-			Zotero.debug("Done waiting for dialog");
-			
-			assert.isTrue(stub4.calledTwice);
-			assert.isTrue(stub4.getCall(0).calledWith(oldStorageDir));
-			assert.isTrue(stub4.getCall(1).calledWith(newDBFile));
-			assert.isTrue(stub5.called);
-			
-			stub3.restore();
-			stub4.restore();
-			stub5.restore();
+			yield assert.eventually.isFalse(Zotero.DataDirectory.checkForMigration(oldDir, newDir));
 		});
 		
-		it("should show error on full failure", function* () {
-			yield populateDataDirectory(oldDir);
-			
-			let origFunc = OS.File.move;
-			let stub3 = sinon.stub(OS.File, "move", function () {
-				if (OS.Path.basename(arguments[0]) == dbFilename) {
-					return Zotero.Promise.reject(new Error("Error"));
-				}
-				else {
-					return origFunc(...arguments);
-				}
+		add("should show error on partial failure", function (automatic) {
+			return function* () {
+				yield populateDataDirectory(oldDir, null, automatic);
+				
+				let origFunc = OS.File.move;
+				let fileMoveStub = sinon.stub(OS.File, "move", function () {
+					if (OS.Path.basename(arguments[0]) == storageFile1) {
+						return Zotero.Promise.reject(new Error("Error"));
+					}
+					else {
+						let args;
+						if (Zotero.platformMajorVersion < 46) {
+							args = Array.from(arguments);
+						}
+						else {
+							args = arguments;
+						}
+						return origFunc(...args);
+					}
+				});
+				let stub1 = sinon.stub(Zotero.File, "reveal").returns(Zotero.Promise.resolve());
+				let stub2 = sinon.stub(Zotero.Utilities.Internal, "quitZotero");
+				
+				var promise2;
+				// Click "Try Again" the first time, and then "Show Directories and Quit Zotero"
+				var promise = waitForDialog(function (dialog) {
+					promise2 = waitForDialog(null, 'extra1');
+					
+					// Make sure we're displaying the right message for this mode (automatic or manual)
+					Components.utils.import("resource://zotero/config.js");
+					assert.include(
+						dialog.document.documentElement.textContent,
+						Zotero.getString(
+							`dataDir.migration.failure.partial.${automatic ? 'automatic' : 'manual'}.text`,
+							[ZOTERO_CONFIG.CLIENT_NAME, Zotero.appName]
+						)
+					);
+				});
+				yield Zotero.DataDirectory.checkForMigration(oldDir, newDir);
+				yield promise;
+				yield promise2;
+				
+				assert.isTrue(stub1.calledTwice);
+				assert.isTrue(stub1.getCall(0).calledWith(oldStorageDir));
+				assert.isTrue(stub1.getCall(1).calledWith(newDBFile));
+				assert.isTrue(stub2.called);
+				
+				fileMoveStub.restore();
+				stub1.restore();
+				stub2.restore();
+			};
+		});
+		
+		add("should show error on full failure", function (automatic) {
+			return function* () {
+				yield populateDataDirectory(oldDir, null, automatic);
+				
+				let origFunc = OS.File.move;
+				let stub1 = sinon.stub(OS.File, "move", function () {
+					if (OS.Path.basename(arguments[0]) == dbFilename) {
+						return Zotero.Promise.reject(new Error("Error"));
+					}
+					else {
+						return origFunc(...arguments);
+					}
+				});
+				let stub2 = sinon.stub(Zotero.File, "reveal").returns(Zotero.Promise.resolve());
+				let stub3 = sinon.stub(Zotero.Utilities.Internal, "quitZotero");
+				
+				var promise = waitForDialog(function (dialog) {
+					// Make sure we're displaying the right message for this mode (automatic or manual)
+					Components.utils.import("resource://zotero/config.js");
+					assert.include(
+						dialog.document.documentElement.textContent,
+						Zotero.getString(
+							`dataDir.migration.failure.full.${automatic ? 'automatic' : 'manual'}.text1`,
+							ZOTERO_CONFIG.CLIENT_NAME
+						)
+					);
+				});
+				yield Zotero.DataDirectory.checkForMigration(oldDir, newDir);
+				yield promise;
+				
+				assert.isTrue(stub2.calledOnce);
+				assert.isTrue(stub2.calledWith(oldDir));
+				assert.isTrue(stub3.called);
+				
+				stub1.restore();
+				stub2.restore();
+				stub3.restore();
+			};
+		});
+		
+		describe("automatic mode", function () {
+			tests.forEach(arr => {
+				it(arr[0], arr[1](true));
 			});
-			let stub4 = sinon.stub(Zotero.File, "reveal").returns(Zotero.Promise.resolve());
-			let stub5 = sinon.stub(Zotero.Utilities.Internal, "quitZotero");
-			
-			var promise = waitForDialog();
-			yield Zotero.checkForDataDirectoryMigration(oldDir, newDir);
-			yield promise;
-			
-			assert.isTrue(stub4.calledOnce);
-			assert.isTrue(stub4.calledWith(oldDir));
-			assert.isTrue(stub5.called);
-			
-			stub3.restore();
-			stub4.restore();
-			stub5.restore();
+		});
+		
+		describe("manual mode", function () {
+			tests.forEach(arr => {
+				it(arr[0], arr[1](false));
+			});
 		});
 		
 		it("should remove marker if old directory doesn't exist", function* () {
 			yield populateDataDirectory(newDir, oldDir);
-			yield Zotero.checkForDataDirectoryMigration(newDir, newDir);
+			yield Zotero.DataDirectory.checkForMigration(newDir, newDir);
 			yield checkMigration({
 				skipSetDataDirectory: true
 			});
@@ -212,7 +286,7 @@ describe("Zotero Core Functions", function () {
 	});
 	
 	
-	describe("#migrateDataDirectory()", function () {
+	describe("#migrate()", function () {
 		// Define tests and store for running in non-mv mode
 		var tests = [];
 		function add(desc, fn) {
@@ -222,7 +296,7 @@ describe("Zotero Core Functions", function () {
 		
 		add("should move all files and folders", function* () {
 			yield populateDataDirectory(oldDir);
-			yield Zotero.migrateDataDirectory(oldDir, newDir);
+			yield Zotero.DataDirectory.migrate(oldDir, newDir);
 			yield checkMigration();
 		});
 		
@@ -232,7 +306,7 @@ describe("Zotero Core Functions", function () {
 			
 			yield OS.File.copy(oldMigrationMarker, newMigrationMarker);
 			
-			yield Zotero.migrateDataDirectory(oldDir, newDir, true);
+			yield Zotero.DataDirectory.migrate(oldDir, newDir, true);
 			yield checkMigration();
 		});
 		
@@ -243,7 +317,7 @@ describe("Zotero Core Functions", function () {
 			yield OS.File.copy(oldMigrationMarker, newMigrationMarker);
 			yield OS.File.move(OS.Path.join(oldDir, dbFilename), OS.Path.join(newDir, dbFilename));
 			
-			yield Zotero.migrateDataDirectory(oldDir, newDir, true);
+			yield Zotero.DataDirectory.migrate(oldDir, newDir, true);
 			yield checkMigration();
 		});
 		
@@ -259,7 +333,7 @@ describe("Zotero Core Functions", function () {
 			yield removeDir(newTranslatorsDir);
 			yield removeDir(newStorageDir2);
 			
-			yield Zotero.migrateDataDirectory(oldDir, newDir, true);
+			yield Zotero.DataDirectory.migrate(oldDir, newDir, true);
 			yield checkMigration();
 		});
 		
@@ -268,7 +342,7 @@ describe("Zotero Core Functions", function () {
 			yield OS.File.makeDir(newDir, { unixMode: 0o755 });
 			yield Zotero.File.putContentsAsync(OS.Path.join(newDir, 'existing'), '');
 			
-			yield Zotero.migrateDataDirectory(oldDir, newDir);
+			yield Zotero.DataDirectory.migrate(oldDir, newDir);
 			yield checkMigration();
 			
 			assert.isTrue(yield OS.File.exists(OS.Path.join(newDir + "-1", 'existing')));
@@ -295,7 +369,7 @@ describe("Zotero Core Functions", function () {
 				yield populateDataDirectory(oldDir);
 				
 				let origFunc = OS.File.move;
-				let stub3 = sinon.stub(OS.File, "move", function () {
+				let stub1 = sinon.stub(OS.File, "move", function () {
 					if (OS.Path.basename(arguments[0]) == storageFile1) {
 						return Zotero.Promise.reject(new Error("Error"));
 					}
@@ -311,9 +385,9 @@ describe("Zotero Core Functions", function () {
 					}
 				});
 				
-				yield Zotero.migrateDataDirectory(oldDir, newDir);
+				yield Zotero.DataDirectory.migrate(oldDir, newDir);
 				
-				stub3.restore();
+				stub1.restore();
 				
 				yield checkMigration({
 					skipOldDir: true,

@@ -165,6 +165,7 @@ Zotero.Server.Connector.Detect.prototype = {
 				
 				// get translators
 				me._translate.setDocument(me._browser.contentDocument);
+				me._translate.setLocation(me._parsedPostData["uri"], me._parsedPostData["uri"]);
 				me._translate.getTranslators();
 			} catch(e) {
 				sendResponseCallback(500);
@@ -183,16 +184,8 @@ Zotero.Server.Connector.Detect.prototype = {
 	 */
 	_translatorsAvailable: function(obj, translators) {
 		var jsons = [];
-		for each(var translator in translators) {
-			if(translator.itemType == "multiple") {
-				var icon = "treesource-collection.png"
-			} else {
-				var icon = Zotero.ItemTypes.getImageSrc(translator.itemType);
-				icon = icon.substr(icon.lastIndexOf("/")+1);
-			}
-			var json = {itemType: translator.itemType, translatorID: translator.translatorID,
-				label: translator.label, priority: translator.priority}
-			jsons.push(json);
+		for (let translator of translators) {
+			jsons.push(translator.serialize(TRANSLATOR_PASSING_PROPERTIES));
 		}
 		this.sendResponse(200, "application/json", JSON.stringify(jsons));
 		
@@ -294,7 +287,7 @@ Zotero.Server.Connector.SavePage.prototype = {
 		translate.setHandler("attachmentProgress", function(obj, attachment, progress, error) {
 			Zotero.Server.Connector.AttachmentProgressManager.onProgress(attachment, progress, error);
 		});
-		translate.setHandler("itemsDone", function(obj, item) {
+		translate.setHandler("done", function(obj, item) {
 			Zotero.Browser.deleteHiddenBrowser(me._browser);
 			if(jsonItems.length || me.selectedItems === false) {
 				me.sendResponse(201, "application/json", JSON.stringify({items: jsonItems}));
@@ -591,6 +584,57 @@ Zotero.Server.Connector.Progress.prototype = {
 		sendResponseCallback(200, "application/json",
 			JSON.stringify(data.map(id => Zotero.Server.Connector.AttachmentProgressManager.getProgressForID(id))));
 	}
+};
+
+/**
+ * Translates resources using import translators
+ * 	
+ * Returns:
+ * 	- Object[Item] an array of imported items
+ */
+ 
+Zotero.Server.Connector.Import = function() {};
+Zotero.Server.Endpoints["/connector/import"] = Zotero.Server.Connector.Import;
+Zotero.Server.Connector.Import.prototype = {
+	supportedMethods: ["POST"],
+	supportedDataTypes: '*',
+	permitBookmarklet: false,
+	
+	init: Zotero.Promise.coroutine(function* (url, data, sendResponseCallback){
+		let translate = new Zotero.Translate.Import();
+		translate.setString(data);
+		let translators = yield translate.getTranslators();
+		if (!translators || !translators.length) {
+			return sendResponseCallback(400);
+		}
+		translate.setTranslator(translators[0]);
+		let items = yield translate.translate();
+		return sendResponseCallback(201, "application/json", JSON.stringify(items));
+	})
+}
+
+/**
+ * Install CSL styles
+ * 	
+ * Returns:
+ * 	- {name: styleName}
+ */
+ 
+Zotero.Server.Connector.InstallStyle = function() {};
+Zotero.Server.Endpoints["/connector/installStyle"] = Zotero.Server.Connector.InstallStyle;
+Zotero.Server.Connector.InstallStyle.prototype = {
+	supportedMethods: ["POST"],
+	supportedDataTypes: '*',
+	permitBookmarklet: false,
+	
+	init: Zotero.Promise.coroutine(function* (url, data, sendResponseCallback){
+		try {
+			var styleName = yield Zotero.Styles.install(data, url.query.origin || null, true);
+		} catch (e) {
+			sendResponseCallback(400, "text/plain", e.message)
+		}
+		sendResponseCallback(201, "application/json", JSON.stringify({name: styleName}));
+	})
 };
 
 /**
